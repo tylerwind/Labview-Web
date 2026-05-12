@@ -245,6 +245,166 @@ API: getSystemInfo
 └───────────────────┘
 ```
 
+## 五、广播消息格式
+
+### 1. 状态广播 (labview/status)
+
+LabVIEW 定期（建议每秒）发布系统状态到 `labview/status` 主题。
+
+**消息格式：**
+
+```json
+{
+  "timestamp": 1699876543000,
+  "data": {
+    "cpuUsage": 45.2,
+    "memoryUsage": 62.8,
+    "temperature": 55.5,
+    "uptime": 3600
+  }
+}
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `timestamp` | number | 消息发送时间戳（毫秒） |
+| `data.cpuUsage` | number | CPU 使用率 (0-100%) |
+| `data.memoryUsage` | number | 内存使用率 (0-100%) |
+| `data.temperature` | number | CPU 温度 (°C) |
+| `data.uptime` | number | 系统运行时间（秒） |
+
+**LabVIEW 实现示例：**
+
+```
+┌─────────────────────────────────────────────┐
+│  Timed Loop (1000ms)                        │
+├─────────────────────────────────────────────┤
+│  1. 获取CPU使用率 (System Exec: wmic)       │
+│  2. 获取内存使用率                          │
+│  3. 获取温度 (可选)                         │
+│  4. 计算运行时间                            │
+│  5. 构建JSON Cluster                        │
+│     - timestamp: Get Date/Time In Seconds   │
+│     - data: SystemInfo Cluster              │
+│  6. Flatten To JSON                         │
+│  7. MQTT Publish                            │
+│     Topic: "labview/status"                 │
+│     QoS: 0                                  │
+└─────────────────────────────────────────────┘
+```
+
+### 2. 数据推送 (labview/data/{type})
+
+LabVIEW 在数据采集过程中实时推送数据到 `labview/data/{type}` 主题。
+
+**支持的类型：**
+- `waveform` - 波形数据
+- `spectrum` - 频谱数据
+- `statistics` - 统计数据
+
+**消息格式 (waveform 类型)：**
+
+```json
+{
+  "timestamp": 1699876543210,
+  "data": [0.5, 0.8, 1.2, 0.9, 0.3, -0.2, -0.7, -1.0, -0.6, 0.1]
+}
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `timestamp` | number | 数据采样时间戳（毫秒） |
+| `data` | array | 采样数据数组（数值数组） |
+
+**LabVIEW 实现示例：**
+
+```
+┌─────────────────────────────────────────────┐
+│  DAQmx Read (Analog 1D DBL NChan NSamp)     │
+├─────────────────────────────────────────────┤
+│  1. 读取采集数据 (二维数组)                  │
+│  2. 转置数组 (通道 × 采样点 → 采样点 × 通道) │
+│  3. 选择指定通道数据                         │
+│  4. 构建JSON Cluster                        │
+│     - timestamp: Get Date/Time In Seconds   │
+│     - data: 数据数组 (1D DBL Array)         │
+│  5. Flatten To JSON                         │
+│  6. MQTT Publish                            │
+│     Topic: "labview/data/waveform"          │
+│     QoS: 0                                  │
+└─────────────────────────────────────────────┘
+```
+
+**消息格式 (statistics 类型)：**
+
+```json
+{
+  "timestamp": 1699876543210,
+  "data": {
+    "channel": 1,
+    "min": -1.25,
+    "max": 1.18,
+    "mean": 0.05,
+    "rms": 0.72,
+    "sampleCount": 1000
+  }
+}
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `timestamp` | number | 统计计算时间戳（毫秒） |
+| `data.channel` | number | 通道号 |
+| `data.min` | number | 最小值 |
+| `data.max` | number | 最大值 |
+| `data.mean` | number | 平均值 |
+| `data.rms` | number | 均方根值 |
+| `data.sampleCount` | number | 样本数量 |
+
+**LabVIEW 实现示例：**
+
+```
+┌─────────────────────────────────────────────┐
+│  统计计算 (每N个采样点或每秒)                │
+├─────────────────────────────────────────────┤
+│  1. 获取最近N个采样点                        │
+│  2. 计算统计值                               │
+│     - Array Max & Min                       │
+│     - Mean (Array Mean)                     │
+│     - RMS (Array RMS)                       │
+│  3. 构建JSON Cluster                        │
+│     - timestamp                             │
+│     - data: Statistics Cluster              │
+│  4. Flatten To JSON                         │
+│  5. MQTT Publish                            │
+│     Topic: "labview/data/statistics"        │
+│     QoS: 0                                  │
+└─────────────────────────────────────────────┘
+```
+
+### 3. 广播消息通用说明
+
+**QoS 建议：**
+- 状态广播和数据推送使用 **QoS 0**（最多一次）
+- 减少网络开销，允许偶尔丢失
+
+**发布频率：**
+- `labview/status`: 每秒 1 次
+- `labview/data/waveform`: 根据采样率，建议每 100-500ms 推送一次（批量数据）
+- `labview/data/statistics`: 每秒 1 次或每 N 个采样点计算一次
+
+**数据压缩（可选）：**
+当数据量较大时，可以考虑：
+1. 使用二进制格式 + Base64 编码
+2. 数据压缩（gzip）
+3. 差分编码（只发送变化量）
+
 ## 六、错误处理
 
 ### 错误码定义
