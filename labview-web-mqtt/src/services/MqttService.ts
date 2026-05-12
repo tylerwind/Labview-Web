@@ -80,8 +80,18 @@ export class MqttService {
 
   private handleMessage(topic: string, payload: Buffer): void {
     try {
-      const message: MqttMessage = JSON.parse(payload.toString())
-      console.log(`[MQTT] Received on ${topic}:`, message)
+      const rawMessage = JSON.parse(payload.toString())
+      console.log(`[MQTT] Received on ${topic}:`, rawMessage)
+
+      // 支持两种消息格式：
+      // 1. 标准 MqttMessage 格式（带 id, action）
+      // 2. 广播消息格式（只有 timestamp 和 data）
+      const message: MqttMessage = rawMessage.id ? rawMessage : {
+        id: '',
+        timestamp: rawMessage.timestamp || Date.now(),
+        action: '',
+        data: rawMessage.data
+      }
 
       if (message.id && this.pendingRequests.has(message.id)) {
         const pending = this.pendingRequests.get(message.id)!

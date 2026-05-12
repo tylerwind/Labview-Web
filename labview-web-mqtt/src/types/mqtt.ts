@@ -7,9 +7,9 @@ export interface MqttConfig {
 }
 
 export interface MqttMessage {
-  id: string
+  id?: string
   timestamp: number
-  action: string
+  action?: string
   params?: Record<string, unknown>
   result?: 'success' | 'error'
   data?: unknown
